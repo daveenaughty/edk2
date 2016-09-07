@@ -1,1 +1,72 @@
-# qemu-system-x86_64 --bios *.VF -m 1024
+# run ovmf with qemu:
+$ qemu-system-x86_64 --bios *.VF -m 1024
+
+
+# Creating disk images
+To launch a UEFI application you will need to create a disk image and present it to QEMU. UEFI firmware expects UEFI applications to be stored in a FAT12, FAT16, or FAT32 file system on a GPT-partitioned disk. Many firmwares only support FAT32, so that's what you'll want to use. Depending on your platform, there are several different ways to create a disk image containing your UEFI application, but they all start by creating a zeroed disk image file. The minimum FAT32 partition size is 33,548,800 bytes, plus you will need space for the primary and secondary GPT tables, plus some slack space so the partition can be aligned correctly. Throughout these examples we will be creating a 48,000,000 byte (93750 512-byte sectors, or 48 MB) disk image.
+
+$ dd if=/dev/zero of=/path/to/uefi.img bs=512 count=93750
+
+Linux, root required
+--
+This approach requires root privileges and uses gdisk, losetup, and mkdosfs. First, use gdisk to create a GPT partition table with a single EFI system partition.
+$ gdisk /path/to/uefi.img
+GPT fdisk (gdisk) version 0.8.10
+ 
+Partition table scan:
+  MBR: not present
+  BSD: not present
+  APM: not present
+  GPT: not present
+ 
+Creating new GPT entries.
+ 
+Command (? for help): o
+This option deletes all partitions and creates a new protective MBR.
+Proceed? (Y/N): y
+ 
+Command (? for help): n
+Partition number (1-128, default 1): 1
+First sector (34-93716, default = 2048) or {+-}size{KMGTP}: 2048
+Last sector (2048-93716, default = 93716) or {+-}size{KMGTP}: 93716
+Current type is 'Linux filesystem'
+Hex code or GUID (L to show codes, Enter = 8300): ef00
+Changed type of partition to 'EFI System'
+ 
+Command (? for help): w
+ 
+Final checks complete. About to write GPT data. THIS WILL OVERWRITE EXISTING
+PARTITIONS!!
+ 
+Do you want to proceed? (Y/N): y
+OK; writing new GUID partition table (GPT) to uefi.img.
+Warning: The kernel is still using the old partition table.
+The new table will be used at the next reboot.
+The operation has completed successfully.
+Now you have disk image with GUID partition table on it and an unformatted EFI partition starting at sector 2048. Unless you deviated from the commands shown above, the disk image will use 512-byte sectors, so the EFI partition starts at byte 1,048,576 and is 46,934,528 bytes in length. Use losetup to present the partition to Linux on a loopback device.
+--
+
+$ losetup --offset 1048576 --sizelimit 46934528 /dev/loop0 /path/to/uefi.img
+
+(If /dev/loop0 is already in use you will need to select a different loopback device.)
+
+Format the partition for FAT32 with mkdosfs.
+
+$ mkdosfs -F 32 /dev/loop0
+
+The partition can now be mounted, so that we can copy files to it. In this example we use the "/mnt" directory, but you could also create a local directory for temporary use.
+
+$ mount /dev/loop0 /mnt
+Copy any UEFI applications you want to test to the file system.
+
+$ cp /path/to/main.efi /mnt/
+$ ...
+
+Finally, unmount the partition and free the loopback device.
+
+$ umount /mnt
+$ losetup -d /dev/loop0
+
+uefi.img is now a disk image containing primary and secondary GPT tables, containing a single partition of type EFI, containing a FAT32 file system, containing one or more UEFI applications.
+
+$ qemu-system-x86_64 -cpu qemu64 -bios /path/to/OVMF.fd -drive file=uefi.disk,if=ide
